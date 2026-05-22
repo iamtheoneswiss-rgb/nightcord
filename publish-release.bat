@@ -37,7 +37,7 @@ echo  [1/8] Mise a jour de la version vers %VERSION%...
 
 powershell -NoProfile -Command "(Get-Content 'package.json') -replace '\"version\": \"[^\"]+\"', '\"version\": \"%VERSION%\"' ^| Set-Content 'package.json'"
 
-powershell -NoProfile -Command "(Get-Content 'src\plugins\nightcordUpdater\index.tsx') -replace 'const CURRENT_VERSION = \"[^\"]+\"', 'const CURRENT_VERSION = \"%VERSION%\"' ^| Set-Content 'src\plugins\nightcordUpdater\index.tsx'" 2>nul
+powershell -NoProfile -Command "(Get-Content 'src\nightcordplugins\nightcordUpdater\index.tsx') -replace 'const CURRENT_VERSION = \"[^\"]+\"', 'const CURRENT_VERSION = \"%VERSION%\"' ^| Set-Content 'src\nightcordplugins\nightcordUpdater\index.tsx'" 2>nul
 
 echo  [1/8] Version mise a jour.
 
@@ -51,7 +51,7 @@ if errorlevel 1 (
 ) else (
     echo  Aucun changement a committer.
 )
-git push
+git push --set-upstream origin master
 if errorlevel 1 (
     echo  [ERREUR] Impossible de push sur GitHub. Verifiez vos identifiants/droits d'acces.
     pause
