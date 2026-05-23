@@ -41,9 +41,39 @@ jobs:
           node electron-builder.config.cjs || true
           npx electron-builder --config electron-builder.config.cjs --win --publish always
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Package nightcord-dist.zip
+        shell: pwsh
+        run: |
+          # Gather everything the launcher needs: patcher.js, dist/, ghost-server/, modules/, binaries
+          $staging = "nightcord-dist-staging"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+          # Core JS dist output (patcher.js, renderer.js, preload.js …)
+          if (Test-Path "dist") {
+            Copy-Item "dist" "$staging\dist" -Recurse
+          }
+
+          # Ghost-server (voice/stream server)
+          if (Test-Path "ghost-server") {
+            Copy-Item "ghost-server" "$staging\ghost-server" -Recurse
+          }
+
+          # Static assets from release/nightcord-dist (ffmpeg.dll, modules, etc.)
+          if (Test-Path "release\nightcord-dist") {
+            Copy-Item "release\nightcord-dist\*" "$staging\" -Recurse -Force
+          }
+
+          # Entry-point files
+          foreach ($f in @("nightcord-index.js", "nightcord-preload.js")) {
+            if (Test-Path $f) { Copy-Item $f "$staging\" }
+          }
+
+          Compress-Archive -Path "$staging\*" -DestinationPath "nightcord-dist.zip" -Force
+          Write-Host "nightcord-dist.zip created ($($(Get-Item nightcord-dist.zip).Length / 1MB) MB)"
+
+      - name: Upload nightcord-dist.zip to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: nightcord-windows
-          path: release/*.exe
-          retention-days: 7
+          files: nightcord-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
