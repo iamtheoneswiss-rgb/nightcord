@@ -296,17 +296,22 @@ async function doJoinVoice(session, guildId, channelId) {
     while (attempts < 2) {
         attempts++;
         try {
+            console.log("[GhostServer] Appel joinVoice tentative " + attempts + " pour " + guildId + "/" + channelId);
             udpConn = await Promise.race([
-                session.streamer.joinVoice(guildId, channelId, { receiveAudio: true }),
+                session.streamer.joinVoice(guildId, channelId, { receiveAudio: true }).then(u => { console.log("[GhostServer] joinVoice resolved! ready=" + u?.ready); return u; }),
                 new Promise((_, r) => setTimeout(() => r(new Error("Timeout connexion WebRTC")), 15000))
             ]);
             break; // Succès
         } catch (e) {
             console.error(`[GhostServer] ❌ joinVoice tentative ${attempts} a echoue:`, e.message);
             if (attempts >= 2) throw e;
-            // Clean up et pause avant retry
-            try { session.streamer.leaveVoice(); } catch { }
-            await new Promise(r => setTimeout(r, 1000));
+            // NE PAS appeler leaveVoice() — ça efface les listeners VOICE_SERVER_UPDATE
+            // Juste stopper la VoiceConnection WebSocket si elle existe
+            try { session.streamer.voiceConnection?.stop(); } catch { }
+            try { session.streamer._voiceConnection = undefined; } catch { }
+            try { session.streamer._gatewayEmitter.removeAllListeners("VOICE_STATE_UPDATE"); } catch { }
+            try { session.streamer._gatewayEmitter.removeAllListeners("VOICE_SERVER_UPDATE"); } catch { }
+            await new Promise(r => setTimeout(r, 1500));
         }
     }
 
@@ -326,47 +331,37 @@ async function doJoinVoice(session, guildId, channelId) {
         startPermanentAudio(session, udpConn);
     }
 
+    // DVS v5/v6 compatible: polling sur udpConn.ready
     if (udpConn.ready) {
-        // Ghost-server chaud ou reconnexion rapide — immediat
         activateAudio();
     } else {
+        let activated = false;
+        // Essayer onStateChange (DVS v6)
         try {
-            const webRtcConn = udpConn.webRtcConn;
-            if (webRtcConn) {
-                let activated = false;
-                webRtcConn.onStateChange(async (state) => {
-                    console.log("[GhostServer] WebRTC State:", state);
-                    if (state === "connected" && !activated) {
-                        activated = true;
-                        console.log("[GhostServer] ✅ WebRTC state=connected");
-                        activateAudio();
-                    } else if (state === "failed" || state === "closed") {
-                        if (!activated) {
-                            console.error("[GhostServer] ❌ WebRTC Failed -> tentative de reconnexion");
-                            // Si ça failed avant même d'être connecté (micro restera gris), on retry
-                            try {
-                                await new Promise(r => setTimeout(r, 500)); // Laisse un peu de temps
-                                console.log("[GhostServer] 🔄 Reconnexion automatique relancée...");
-                                await doJoinVoice(session, guildId, channelId); // Relance la fonction
-                            } catch (e) { console.error("[GhostServer] Echec du restart", e); }
-                        }
-                    }
+            const webRtcConn = udpConn?.webRtcConn?.webRtcConn ?? udpConn?.webRtcConn;
+            if (webRtcConn && typeof webRtcConn.onStateChange === 'function') {
+                webRtcConn.onStateChange((state) => {
+                    console.log('[GhostServer] WebRTC State:', state);
+                    if (state === 'connected' && !activated) { activated = true; activateAudio(); }
                 });
-
-                // Fallback timeout
-                setTimeout(() => {
-                    if (!activated) {
-                        activated = true;
-                        console.warn("[GhostServer] ⚠️ WebRTC timeout 5s — activation forcee");
-                        activateAudio();
-                    }
-                }, 5000);
-            } else {
+            }
+        } catch {}
+        // Polling universel
+        let polls = 0;
+        const poll = setInterval(() => {
+            polls++;
+            if (udpConn.ready && !activated) {
+                clearInterval(poll);
+                activated = true;
+                console.log('[GhostServer] udpConn.ready=true apres ' + (polls*200) + 'ms');
+                activateAudio();
+            } else if (polls >= 50 && !activated) {
+                clearInterval(poll);
+                activated = true;
+                console.warn('[GhostServer] Timeout 10s - activation forcee (ready=' + udpConn.ready + ')');
                 activateAudio();
             }
-        } catch {
-            activateAudio();
-        }
+        }, 200);
     }
 }
 

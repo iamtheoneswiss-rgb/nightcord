@@ -17,7 +17,7 @@ import { HeaderBarButton } from "@api/HeaderBar";
 import { EquicordDevs } from "@utils/constants";
 import { openModal, ModalRoot, ModalSize } from "@utils/modal";
 import definePlugin, { IconComponent, PluginNative } from "@utils/types";
-import { React, useState, useEffect, useRef, Select } from "@webpack/common";
+import { React, useState, useEffect, useRef, Select, MediaEngineStore } from "@webpack/common";
 import { t, useTranslation } from "../../plugins/autoTranslateNightcord";
 
 // ─── Native (IPC → main process) ─────────────────────────────────────────────
@@ -260,6 +260,40 @@ async function initPlayer() {
     playerState.notify();
 }
 
+async function getDiscordRealOutputDeviceId(): Promise<string> {
+    try {
+        const discordId = MediaEngineStore.getOutputDeviceId();
+        if (!discordId || discordId === "default") return "";
+        
+        const devs = MediaEngineStore.getOutputDevices();
+        const selected = devs[discordId];
+        if (!selected || !selected.name) return "";
+        
+        let webDevs = await navigator.mediaDevices.enumerateDevices();
+        if (webDevs.some(d => d.kind === "audiooutput" && !d.label)) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(t => t.stop());
+                webDevs = await navigator.mediaDevices.enumerateDevices();
+            } catch { }
+        }
+        
+        const match = webDevs.find(d => 
+            d.kind === "audiooutput" && 
+            d.label && 
+            (d.label.includes(selected.name) || selected.name.includes(d.label) || d.label.toLowerCase() === selected.name.toLowerCase())
+        );
+        
+        if (match) {
+            console.log(`[SoundCord] Mapped Discord output device "${selected.name}" to WebAudio deviceId "${match.deviceId}"`);
+            return match.deviceId;
+        }
+    } catch (err) {
+        console.error("[SoundCord] Error mapping Discord output device:", err);
+    }
+    return "";
+}
+
 async function playerPlayTrack(track: ScTrack, fromFavIdx = -1) {
     const s = playerState;
     if (!s.clientId) { s.status = `❌ Missing client_id`; s.notify(); return; }
@@ -307,8 +341,14 @@ async function playerPlayTrack(track: ScTrack, fromFavIdx = -1) {
         // Apply saved output device
         try {
             const savedOutput = await DataStore.get<string>("SoundCordPlayer_outputDevice");
-            if (savedOutput && savedOutput !== "default" && (audio as any).setSinkId) {
-                await (audio as any).setSinkId(savedOutput);
+            let targetDeviceId = "";
+            if (savedOutput && savedOutput !== "default") {
+                targetDeviceId = savedOutput;
+            } else {
+                targetDeviceId = await getDiscordRealOutputDeviceId();
+            }
+            if (targetDeviceId && (audio as any).setSinkId) {
+                await (audio as any).setSinkId(targetDeviceId);
             }
         } catch { }
         s.audio = audio;
@@ -425,14 +465,26 @@ function SoundCloudModal({ onClose }: { onClose: () => void; }) {
 
     useEffect(() => { initPlayer(); }, []);
 
-    // Loads output devices on mount
     useEffect(() => {
         const load = async () => {
             try {
-                await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => { });
-                const devs = await navigator.mediaDevices.enumerateDevices();
-                const outputs = devs.filter(d => d.kind === "audiooutput" && d.deviceId !== "communications");
-                setOutputDevices(outputs);
+                // FIX: MediaEngineStore.getOutputDevices() retourne les IDs internes Discord,
+                // PAS les vrais deviceId WebAudio requis par setSinkId().
+                // On utilise navigator.mediaDevices.enumerateDevices() pour avoir les vrais deviceId.
+                let devices = await navigator.mediaDevices.enumerateDevices();
+                const outputs = devices.filter(d => d.kind === "audiooutput");
+
+                // Si les labels sont vides (permission pas encore accordée), on essaie de les obtenir
+                if (outputs.some(d => !d.label)) {
+                    try {
+                        // Demander accès micro déclenche la permission pour lister les outputs aussi
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        stream.getTracks().forEach(t => t.stop());
+                        devices = await navigator.mediaDevices.enumerateDevices();
+                    } catch { }
+                }
+
+                setOutputDevices(devices.filter(d => d.kind === "audiooutput"));
                 const saved = await DataStore.get<string>(SC_OUTPUT_KEY);
                 if (saved) setSelectedOutput(saved);
             } catch { }
@@ -440,13 +492,17 @@ function SoundCloudModal({ onClose }: { onClose: () => void; }) {
         load();
     }, []);
 
+
     async function applyOutputDevice(deviceId: string) {
         setSelectedOutput(deviceId);
         await DataStore.set(SC_OUTPUT_KEY, deviceId);
         // Apply to current audio if possible
         try {
             if (p.audio && (p.audio as any).setSinkId) {
-                await (p.audio as any).setSinkId(deviceId === "default" ? "" : deviceId);
+                const realId = deviceId === "default"
+                    ? await getDiscordRealOutputDeviceId()
+                    : deviceId;
+                await (p.audio as any).setSinkId(realId);
             }
         } catch { }
     }

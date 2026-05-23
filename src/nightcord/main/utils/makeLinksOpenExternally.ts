@@ -11,6 +11,44 @@ import { Settings } from "../settings";
 import { createOrFocusPopup, setupPopout } from "./popout";
 import { execSteamURL, isDeckGameMode, steamOpenURL } from "./steamOS";
 
+// ── Overlay popout flood protection ──────────────────────────────────────────
+// When Discord's OOP overlay crashes (always in Nightcord — we're not discord.exe),
+// it enters a retry loop that rapidly fires window.open("/popout") dozens of times,
+// opening https://discord.com/popout in the user's browser.
+// We block overlay-specific popouts entirely and rate-limit the rest.
+const OVERLAY_FRAME_NAMES = new Set([
+    "DISCORD_OutOfProcessOverlay",
+    "DISCORD_Overlay",
+    "DISCORD_GAME_OVERLAY",
+]);
+
+const POPOUT_RATE_LIMIT_WINDOW_MS = 5000;
+const POPOUT_RATE_LIMIT_MAX = 3;
+const popoutTimestamps: number[] = [];
+let popoutCounter = 0;
+
+function isPopoutRateLimited(): boolean {
+    const now = Date.now();
+    // Purge timestamps outside the window
+    while (popoutTimestamps.length > 0 && now - popoutTimestamps[0] > POPOUT_RATE_LIMIT_WINDOW_MS) {
+        popoutTimestamps.shift();
+    }
+    if (popoutTimestamps.length >= POPOUT_RATE_LIMIT_MAX) {
+        console.warn("[Nightcord] Popout rate-limited — too many popout requests (overlay crash loop?)");
+        return true;
+    }
+    popoutTimestamps.push(now);
+    return false;
+}
+
+function stablePopoutKey(frameName: string): string {
+    if (frameName.startsWith("DISCORD_")) return frameName;
+    if (frameName) return `DISCORD_${frameName}`;
+    // Use a stable counter instead of Math.random() so duplicate unnamed popouts
+    // get deduplicated by createOrFocusPopup instead of creating N separate windows.
+    return `DISCORD_POPOUT_${++popoutCounter}`;
+}
+
 export function handleExternalUrl(url: string, protocol?: string): { action: "deny" | "allow" } {
     if (protocol == null) {
         try {
@@ -57,7 +95,20 @@ export function makeLinksOpenExternally(win: BrowserWindow) {
 
         const isDiscordPopout = pathname === "/popout" && DISCORD_HOSTNAMES.includes(hostname);
         if (isDiscordPopout || (frameName.startsWith("DISCORD_") && pathname === "/popout" && DISCORD_HOSTNAMES.includes(hostname))) {
-            const key = frameName.startsWith("DISCORD_") ? frameName : `DISCORD_${frameName || "POPOUT_" + Math.random().toString(36).substring(2, 9)}`;
+            // ── Block overlay popouts entirely ─────────────────────────────
+            // The game overlay can never work in Nightcord (wrong process name),
+            // so silently deny these instead of letting them flood.
+            if (OVERLAY_FRAME_NAMES.has(frameName)) {
+                console.log("[Nightcord] Blocked overlay popout (overlay unsupported):", frameName);
+                return { action: "deny" };
+            }
+
+            // Rate-limit other popouts to catch unnamed overlay flood patterns
+            if (isPopoutRateLimited()) {
+                return { action: "deny" };
+            }
+
+            const key = stablePopoutKey(frameName);
             const result = createOrFocusPopup(key, features);
             if (result.action === "allow") {
                 return {
@@ -96,7 +147,13 @@ export function makeLinksOpenExternally(win: BrowserWindow) {
         }
 
         if (isPopout) {
-            const key = frameName.startsWith("DISCORD_") ? frameName : `DISCORD_${frameName || "POPOUT_" + Math.random().toString(36).substring(2, 9)}`;
+            // Block overlay windows from being set up — they'll crash anyway
+            if (OVERLAY_FRAME_NAMES.has(frameName)) {
+                childWin.close();
+                return;
+            }
+
+            const key = stablePopoutKey(frameName);
             setupPopout(childWin, key);
         }
     });

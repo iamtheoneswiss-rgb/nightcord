@@ -25,22 +25,30 @@ let startPromise: Promise<boolean> | null = null;
 // ── Trouver ghost-server/server.js ────────────────────────────────────────────
 function findServerScript(): string | null {
     const execDir = path.dirname(process.execPath);
-    const resPath = process.resourcesPath;
+    const resPath = (process as any).resourcesPath ?? "";
     const candidates = [
+        // Production Electron : resources/ghost-server/server.js
         path.join(resPath, "ghost-server", "server.js"),
+        // Production Electron (avec app.asar décompressé) : resources/app/ghost-server/server.js
+        path.join(resPath, "app", "ghost-server", "server.js"),
+        // Production : exe + resources/ sous-dossier
         path.join(execDir, "resources", "ghost-server", "server.js"),
-        path.join(resPath, "..", "ghost-server", "server.js"),
+        path.join(execDir, "resources", "app", "ghost-server", "server.js"),
+        // Portable (dist/desktop extrait) : exe dans dist/desktop, ghost-server à côté
         path.join(execDir, "ghost-server", "server.js"),
+        // dev-inject : __dirname = dist/desktop/renderer
+        path.join(__dirname, "..", "..", "ghost-server", "server.js"),
         path.join(__dirname, "..", "..", "..", "ghost-server", "server.js"),
         path.join(__dirname, "..", "..", "..", "..", "ghost-server", "server.js"),
-        path.join(__dirname, "..", "..", "ghost-server", "server.js"),
+        // Racine du repo en dev
+        path.join(resPath, "..", "ghost-server", "server.js"),
     ];
     console.log("[GhostNative] execPath:", process.execPath);
     console.log("[GhostNative] resourcesPath:", resPath);
     console.log("[GhostNative] __dirname:", __dirname);
     for (const c of candidates) {
         console.log("[GhostNative] test:", c, fs.existsSync(c) ? "✓" : "✗");
-        if (fs.existsSync(c)) { console.log("[GhostNative] server.js:", c); return c; }
+        if (fs.existsSync(c)) { console.log("[GhostNative] server.js trouvé:", c); return c; }
     }
     console.error("[GhostNative] server.js introuvable ! Candidats testés:", candidates.length);
     return null;
@@ -48,15 +56,29 @@ function findServerScript(): string | null {
 
 function findNode(): string {
     const execDir = path.dirname(process.execPath);
-    const resPath = process.resourcesPath;
+    const resPath = (process as any).resourcesPath ?? "";
     const candidates = [
+        // Production Electron : node.exe copié à côté du .exe Discord
         path.join(execDir, "node.exe"),
-        path.join(resPath, "..", "node.exe"),
+        // Production : dans resources/ (collect-assets copie là)
         path.join(resPath, "node.exe"),
+        path.join(resPath, "..", "node.exe"),
+        path.join(resPath, "app", "node.exe"),
+        // Dans le sous-dossier resources/
         path.join(execDir, "resources", "node.exe"),
+        path.join(execDir, "resources", "app", "node.exe"),
+        // Portable : dist/desktop contient node.exe, __dirname remonte à dist/desktop
+        path.join(__dirname, "..", "..", "node.exe"),
+        path.join(__dirname, "..", "..", "..", "node.exe"),
+        // NVM for Windows
+        path.join(process.env.LOCALAPPDATA ?? "", "nvm", "nodejs", "node.exe"),
+        "C:\\nvm4w\\nodejs\\node.exe",
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files (x86)\\nodejs\\node.exe",
+        path.join(process.env.LOCALAPPDATA ?? "", "Programs", "nodejs", "node.exe"),
     ];
     for (const c of candidates) {
-        if (fs.existsSync(c)) { console.log("[GhostNative] node.exe:", c); return c; }
+        if (fs.existsSync(c)) { console.log("[GhostNative] node.exe trouvé:", c); return c; }
     }
     console.warn("[GhostNative] node.exe bundlé introuvable, fallback vers 'node' du PATH");
     return "node";
@@ -137,8 +159,20 @@ async function ensureServer(): Promise<boolean> {
 
         // Limiter les logs du ghost-server dans le main process Electron
         // Trop de logs = I/O sur le thread principal = freezes
+        // Mais on les écrit dans un fichier de log pour le débogage
+        const logPath = path.join(app.getPath("userData"), "ghost-server.log");
+        let logStream: fs.WriteStream | null = null;
+        try {
+            logStream = fs.createWriteStream(logPath, { flags: "w" });
+            logStream.write(`=== GHOST SERVER LOGS STARTED AT ${new Date().toISOString()} ===\n`);
+            console.log("[GhostNative] Log file created at:", logPath);
+        } catch (e: any) {
+            console.error("[GhostNative] Impossible de creer le fichier de log:", e.message);
+        }
+
         let logBuffer = "";
         serverProc.stdout?.on("data", (d: Buffer) => {
+            if (logStream) logStream.write(d);
             logBuffer += d.toString();
             const lines = logBuffer.split("\n");
             logBuffer = lines.pop() ?? "";
@@ -147,16 +181,24 @@ async function ensureServer(): Promise<boolean> {
             }
         });
         serverProc.stderr?.on("data", (d: Buffer) => {
+            if (logStream) logStream.write(d);
             const msg = d.toString().trim();
             if (msg) console.error("[GhostServer ERR]", msg);
         });
         serverProc.on("exit", (code: number | null) => {
             console.log("[GhostNative] server exit:", code);
+            if (logStream) {
+                logStream.write(`\n=== GHOST SERVER EXITED WITH CODE ${code} ===\n`);
+                logStream.end();
+            }
             serverProc = null;
             serverReady = false;
         });
         serverProc.on("error", (e: Error) => {
             console.error("[GhostNative] spawn error:", e.message);
+            if (logStream) {
+                logStream.write(`\n=== GHOST SERVER SPAWN ERROR: ${e.message} ===\n`);
+            }
         });
 
         // Poll toutes les 200ms pendant 60s max

@@ -7,7 +7,7 @@
 import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { ComponentDispatch, React, useEffect, useRef, useState } from "@webpack/common";
+import { ComponentDispatch, React, useEffect, useRef, useState, MediaEngineStore, showToast, Toasts } from "@webpack/common";
 import { getGroqKey } from "../nightcordAI/groqManager";
 import { showApiKeyWarning } from "@utils/apiKeyWarning";
 
@@ -123,13 +123,76 @@ const VoiceDictationButton: ChatBarButtonFactory = ({ isMainChat }) => {
         setErrorMsg(null);
         activeRef.current = true;
 
+        // Helper to map Discord input device to real WebAudio device
+        async function getRealInputDeviceId(discordId: string): Promise<string> {
+            if (!discordId || discordId === "default") return "default";
+            try {
+                const devs = MediaEngineStore.getInputDevices();
+                const selected = devs[discordId];
+                if (!selected || !selected.name) return "default";
+                
+                let webDevs = await navigator.mediaDevices.enumerateDevices();
+                // trigger permissions if empty labels
+                if (webDevs.some(d => d.kind === "audioinput" && !d.label)) {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    stream.getTracks().forEach(t => t.stop());
+                    webDevs = await navigator.mediaDevices.enumerateDevices();
+                }
+                
+                let match = webDevs.find(d => d.kind === "audioinput" && d.deviceId === discordId);
+                
+                if (!match) {
+                    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const normSelected = normalize(selected.name);
+                    
+                    match = webDevs.find(d => {
+                        if (d.kind !== "audioinput" || !d.label) return false;
+                        const normLabel = normalize(d.label);
+                        return normLabel.includes(normSelected) || normSelected.includes(normLabel);
+                    });
+                }
+                
+                if (match) {
+                    console.log(`[VoiceDictation] Mapped Discord device "${selected.name}" to WebAudio deviceId "${match.deviceId}"`);
+                    showToast(`Dictation: Using mic "${match.label || selected.name}"`, Toasts.Type.SUCCESS);
+                    return match.deviceId;
+                } else {
+                    showToast(`Dictation: Could not map "${selected.name}", using default`, Toasts.Type.FAILURE);
+                }
+            } catch (err) {
+                console.error("[VoiceDictation] Error mapping device ID:", err);
+                showToast("Dictation: Error mapping device", Toasts.Type.FAILURE);
+            }
+            return "default";
+        }
+
         // Open microphone
         let stream: MediaStream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            const discordDeviceId = MediaEngineStore.getInputDeviceId();
+            const realDeviceId = await getRealInputDeviceId(discordDeviceId);
+            
+            try {
+                // Premier essai : avec le deviceId spécifique (fonctionne si permission ok)
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: realDeviceId && realDeviceId !== "default"
+                        ? { deviceId: { exact: realDeviceId } }
+                        : true
+                });
+            } catch (firstErr: any) {
+                if (firstErr.name === "NotAllowedError" || firstErr.name === "PermissionDeniedError") {
+                    // Fallback: permission pas encore accordée, demander sans deviceId
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                } else {
+                    throw firstErr;
+                }
+            }
             streamRef.current = stream;
         } catch (e: any) {
-            setErrorMsg("Mic unavailable: " + e.message);
+            const msg = e.name === "NotAllowedError" || e.name === "PermissionDeniedError"
+                ? "Permission micro refusée — vérifiez les permissions dans les paramètres de Discord"
+                : "Mic unavailable: " + e.message;
+            setErrorMsg(msg);
             activeRef.current = false;
             return;
         }

@@ -201,10 +201,25 @@ export async function parseFile(fileName: string) {
                 case "authors":
                     if (!isArrayLiteralExpression(value)) throw fail("authors is not an array literal");
                     data.authors = value.elements.map(e => {
-                        if (!isPropertyAccessExpression(e)) throw fail("authors array contains non-property access expressions");
-                        const d = devs[getName(e)!] || equicordDevs[getName(e)!];
-                        if (!d) throw fail(`couldn't look up author ${getName(e)}`);
-                        return d;
+                        // Support Devs.X / EquicordDevs.X style
+                        if (isPropertyAccessExpression(e)) {
+                            const d = devs[getName(e)!] || equicordDevs[getName(e)!];
+                            if (!d) throw fail(`couldn't look up author ${getName(e)}`);
+                            return d;
+                        }
+                        // Support inline { name: "...", id: 0n } style used in Nightcord plugins
+                        if (isObjectLiteralExpression(e)) {
+                            const nameProp = getObjectProp(e, "name");
+                            const idProp = getObjectProp(e, "id");
+                            if (!nameProp || !isStringLiteral(nameProp)) throw fail("inline author missing string 'name'");
+                            return {
+                                name: nameProp.text,
+                                id: idProp && idProp.kind === SyntaxKind.BigIntLiteral
+                                    ? (idProp as BigIntLiteral).text.slice(0, -1)
+                                    : "0"
+                            };
+                        }
+                        throw fail("authors array contains unsupported element type");
                     });
                     break;
                 case "tags":

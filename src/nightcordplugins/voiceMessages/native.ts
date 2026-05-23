@@ -12,7 +12,7 @@ export async function readRecording(_: any, filePath: string) {
     filePath = normalize(filePath);
     const filename = basename(filePath);
     const discordBaseDirWithTrailingSlash = normalize(app.getPath("userData") + "/");
-    if (!/^\d*recording\.ogg$/.test(filename) || !filePath.toLowerCase().startsWith(discordBaseDirWithTrailingSlash.toLowerCase())) return null;
+    if (!/^\d*recording\.ogg$/.test(filename) || !filePath.startsWith(discordBaseDirWithTrailingSlash)) return null;
 
     try {
         const buf = await readFile(filePath);
