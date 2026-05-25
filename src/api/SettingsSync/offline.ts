@@ -105,6 +105,34 @@ export async function importSettings(data: string, type: BackupType = "all", clo
     }
 }
 
+// Champs sensibles à ne jamais exporter
+const SENSITIVE_PLUGIN_KEYS = new Set([
+    "apiKey",
+    "groqApiKey",
+    "deeplApiKey",
+    "customUploaderRequestURL",
+    "customUploaderHeaders",
+    "customUploaderArgs",
+    "customUploaderURL",
+    "customUploaderThumbnailURL",
+    "customUploaderFileFormName",
+    "customUploaderName",
+    "customUploaderResponseType",
+]);
+
+function stripSensitiveData(settings: any): any {
+    if (!settings?.plugins) return settings;
+    const stripped = JSON.parse(JSON.stringify(settings));
+    for (const pluginName in stripped.plugins) {
+        const plugin = stripped.plugins[pluginName];
+        if (!plugin || typeof plugin !== "object") continue;
+        for (const key of SENSITIVE_PLUGIN_KEYS) {
+            if (key in plugin) delete plugin[key];
+        }
+    }
+    return stripped;
+}
+
 export async function exportSettings({ syncDataStore = true, type = "all", minify }: { syncDataStore?: boolean; type?: BackupType; minify?: boolean; }) {
     const settings = VencordNative.settings.get();
     const quickCss = await VencordNative.quickCss.get();
@@ -128,10 +156,10 @@ export async function exportSettings({ syncDataStore = true, type = "all", minif
 
     switch (type) {
         case "all": {
-            return JSON.stringify({ settings, quickCss, ...(dataStore && { dataStore }) }, null, minify ? undefined : 4);
+            return JSON.stringify({ settings: stripSensitiveData(settings), quickCss, ...(dataStore && { dataStore }) }, null, minify ? undefined : 4);
         }
         case "plugins": {
-            return JSON.stringify({ settings }, null, minify ? undefined : 4);
+            return JSON.stringify({ settings: stripSensitiveData(settings) }, null, minify ? undefined : 4);
         }
         case "css": {
             return JSON.stringify({ quickCss }, null, minify ? undefined : 4);

@@ -67,6 +67,10 @@ function BackupAndRestoreTab() {
             </Paragraph>
 
             <Notice.Warning className={Margins.bottom20}>
+                Sensitive data (API keys, tokens, custom uploader credentials) are automatically excluded from exports for your security.
+            </Notice.Warning>
+
+            <Notice.Warning className={Margins.bottom20}>
                 Importing a settings file will overwrite your current settings. Make sure to export a backup first if you want to keep your current configuration.
             </Notice.Warning>
 
