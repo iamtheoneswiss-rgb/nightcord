@@ -9,7 +9,7 @@ import { Card } from "@components/Card";
 import { Microphone } from "@components/Icons";
 import { Link } from "@components/Link";
 import { Paragraph } from "@components/Paragraph";
-import { lastState as silentMessageEnabled } from "@nightcordplugins/silentMessageToggle";
+import { lastState as silentMessageEnabled } from "@plugins/silentMessageToggle";
 import { Devs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import { Margins } from "@utils/margins";

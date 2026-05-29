@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-$NightcordRepo   = "nightcordoff/nightcord"
+$NightcordRepo   = "iamtheoneswiss-rgb/nightcord"
 $EquilotlUrl     = "https://github.com/Equicord/Equilotl/releases/latest/download/EquilotlCli.exe"
 $InstallDir      = Join-Path $env:LOCALAPPDATA "Nightcord"
 $DistDir         = Join-Path $InstallDir "dist"
@@ -88,40 +88,52 @@ if ($needDownload) {
     }
 }
 
-# ── [2/3] Télécharger les fichiers Nightcord ──────────────────────────────────
-Write-Step 2 3 "Téléchargement des fichiers Nightcord depuis GitHub..."
+# ── [2/3] Obtenir les fichiers Nightcord ──────────────────────────────────────
+Write-Step 2 3 "Recherche des fichiers Nightcord..."
 
-try {
-    $apiUrl   = "https://api.github.com/repos/$NightcordRepo/releases/latest"
-    $release  = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing `
-        -Headers @{ "User-Agent" = "Nightcord-Installer/2.0"; "Accept" = "application/vnd.github.v3+json" }
-
-    $version  = $release.tag_name
-    $distAsset = $release.assets | Where-Object { $_.name -eq "nightcord-dist.zip" } | Select-Object -First 1
-
-    if (-not $distAsset) {
-        Write-Fail "Fichier 'nightcord-dist.zip' introuvable dans la release $version.`n           Contactez le support Nightcord."
-    }
-
-    Write-Host "          Version : $version" -ForegroundColor DarkGray
-    Write-Host "          Téléchargement en cours..." -ForegroundColor DarkGray
-
-    $zipPath = Join-Path $InstallDir "nightcord-dist.zip"
-    Invoke-WebRequest -Uri $distAsset.browser_download_url -OutFile $zipPath -UseBasicParsing `
-        -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" }
-
-    # Extraire proprement (supprimer l'ancien dist d'abord)
+# D'abord, vérifier si les fichiers dist locaux existent (copie depuis le dépôt local)
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LocalDist = Join-Path $ScriptRoot "dist" "desktop"
+if ((Test-Path $LocalDist) -and (Test-Path (Join-Path $LocalDist "patcher.js"))) {
+    Write-Host "          Utilisation des fichiers locaux dans : $LocalDist" -ForegroundColor DarkGray
     if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $DistDir -Force
-    Remove-Item $zipPath -Force
-
-    # Sauvegarder la version installée
+    Copy-Item "$LocalDist\*" $DistDir -Recurse -Force
+    $version = "local-build"
     Set-Content -Path (Join-Path $InstallDir "version.txt") -Value $version
+    Write-OK "Nightcord (build local) prêt à être injecté !"
+} else {
+    # Fallback : télécharger depuis GitHub Releases
+    Write-Host "          Téléchargement depuis GitHub..." -ForegroundColor DarkGray
+    try {
+        $apiUrl   = "https://api.github.com/repos/$NightcordRepo/releases/latest"
+        $release  = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing `
+            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0"; "Accept" = "application/vnd.github.v3+json" }
 
-    Write-OK "Nightcord $version prêt à être injecté !"
-} catch {
-    Write-Fail "Échec du téléchargement Nightcord.`n           Détail : $_"
+        $version  = $release.tag_name
+        $distAsset = $release.assets | Where-Object { $_.name -eq "nightcord-dist.zip" } | Select-Object -First 1
+
+        if (-not $distAsset) {
+            Write-Fail "Fichier 'nightcord-dist.zip' introuvable dans la release $version.`n           Contactez le support Nightcord."
+        }
+
+        Write-Host "          Version : $version" -ForegroundColor DarkGray
+        Write-Host "          Téléchargement en cours..." -ForegroundColor DarkGray
+
+        $zipPath = Join-Path $InstallDir "nightcord-dist.zip"
+        Invoke-WebRequest -Uri $distAsset.browser_download_url -OutFile $zipPath -UseBasicParsing `
+            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" }
+
+        if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $DistDir -Force
+        Remove-Item $zipPath -Force
+
+        Set-Content -Path (Join-Path $InstallDir "version.txt") -Value $version
+        Write-OK "Nightcord $version téléchargé et extrait !"
+    } catch {
+        Write-Fail "Échec du téléchargement Nightcord depuis GitHub.`n           Détail : $_"
+    }
 }
 
 # ── [3/3] Injection via EquilotlCli ───────────────────────────────────────────

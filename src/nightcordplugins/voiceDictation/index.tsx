@@ -153,10 +153,9 @@ const VoiceDictationButton: ChatBarButtonFactory = ({ isMainChat }) => {
                     }
                 }
                 
-                const webDevs = await navigator.mediaDevices.enumerateDevices();
+                let webDevs = await navigator.mediaDevices.enumerateDevices();
                 
                 if (!targetName) return "default";
-                let webDevs = await navigator.mediaDevices.enumerateDevices();
                 if (webDevs.some(d => d.kind === "audioinput" && !d.label)) {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     stream.getTracks().forEach(t => t.stop());
@@ -203,17 +202,18 @@ const VoiceDictationButton: ChatBarButtonFactory = ({ isMainChat }) => {
                     streamRef.current = stream;
                 } catch { }
 
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    audio: realDeviceId && realDeviceId !== "default"
-                        ? { deviceId: { exact: realDeviceId } }
-                        : true
-                });
-            } catch (firstErr: any) {
-                if (firstErr.name === "NotAllowedError" || firstErr.name === "PermissionDeniedError") {
-                    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                } else {
-                    throw firstErr;
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        audio: realDeviceId && realDeviceId !== "default"
+                            ? { deviceId: { exact: realDeviceId } }
+                            : true
+                    });
+                } catch (firstErr: any) {
+                    if (firstErr.name === "NotAllowedError" || firstErr.name === "PermissionDeniedError") {
+                        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    } else {
+                        throw firstErr;
+                    }
                 }
             }
         } catch (err) {
