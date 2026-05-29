@@ -1,172 +1,132 @@
 # ==============================================================================
-#  Nightcord — Installeur utilisateur (PowerShell autonome)
-#  
-#  Ce script fait TOUT automatiquement :
-#  1. Télécharge EquilotlCli.exe (outil d'injection graphique)
-#  2. Télécharge les fichiers Nightcord compilés depuis GitHub
-#  3. Lance l'interface graphique pour choisir votre Discord cible
-#  4. Injecte Nightcord dans Discord
+#  Nightcord - Installer (PowerShell, fully offline capable)
 #
-#  Aucun Node.js, aucun pnpm, aucun code source requis.
-#  Usage : Clic droit → "Exécuter avec PowerShell"
+#  Injects Nightcord into Discord with NO external downloads.
+#  Uses local dist/ files if available, falls back to GitHub Releases.
+#
+#  Usage: Right-click - Run with PowerShell
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
-$ProgressPreference    = "SilentlyContinue"
+$ProgressPreference = "SilentlyContinue"
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-$NightcordRepo   = "iamtheoneswiss-rgb/nightcord"
-$EquilotlUrl     = "https://github.com/Equicord/Equilotl/releases/latest/download/EquilotlCli.exe"
-$InstallDir      = Join-Path $env:LOCALAPPDATA "Nightcord"
-$DistDir         = Join-Path $InstallDir "dist"
-$InstallerDir    = Join-Path $InstallDir "installer"
-$EquilotlExe     = Join-Path $InstallerDir "EquilotlCli.exe"
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LocalDist = Join-Path (Join-Path $ScriptRoot "dist") "desktop"
+$InstallDir = Join-Path $env:LOCALAPPDATA "Nightcord"
+$DistDir = Join-Path $InstallDir "dist"
+$Repo = "iamtheoneswiss-rgb/nightcord"
 
 function Write-Banner {
     Clear-Host
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║          NIGHTCORD  INSTALLER            ║" -ForegroundColor Cyan
-    Write-Host "  ║  Injection rapide dans Discord Desktop   ║" -ForegroundColor DarkCyan
-    Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host "  NIGHTCORD INSTALLER" -ForegroundColor Cyan
+    Write-Host "  Full offline mode`n" -ForegroundColor DarkCyan
 }
 
-function Write-Step($n, $total, $msg) {
-    Write-Host "  [$n/$total] " -NoNewline -ForegroundColor Yellow
-    Write-Host $msg
+function Write-OK($m) { Write-Host "  [OK] $m" -ForegroundColor Green }
+function Write-Fail($m) { Write-Host "`n  [ERROR] $m`n" -ForegroundColor Red; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); exit 1 }
+
+function Find-Discord {
+    $results = @()
+    foreach ($ch in @("Discord","DiscordPTB","DiscordCanary","DiscordDevelopment")) {
+        $base = Join-Path $env:LOCALAPPDATA $ch
+        if (-not (Test-Path $base)) { continue }
+        $versions = Get-ChildItem $base -Directory -Filter "app-*" | Sort-Object Name -Descending
+        foreach ($ver in $versions) {
+            $res = Join-Path $ver.FullName "resources"
+            if ((Test-Path (Join-Path $res "app.asar")) -or (Test-Path (Join-Path $res "_app.asar")) -or (Test-Path (Join-Path $res "app"))) {
+                $results += @{ Path = $res; Version = $ver.Name -replace "app-", "" }
+            }
+        }
+    }
+    return $results
 }
 
-function Write-OK($msg) {
-    Write-Host "          ✓ " -NoNewline -ForegroundColor Green
-    Write-Host $msg
+function Kill-Discord {
+    foreach ($n in @("Discord","DiscordPTB","DiscordCanary","DiscordDevelopment")) {
+        $procs = Get-Process -Name $n -ErrorAction SilentlyContinue
+        if ($procs) { $procs | Stop-Process -Force }
+    }
+    Start-Sleep 2
 }
 
-function Write-Fail($msg) {
-    Write-Host ""
-    Write-Host "  [ERREUR] $msg" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Appuyez sur une touche pour quitter..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit 1
+function Inject-Nightcord {
+    param($ResourcesPath, $PatcherPath)
+    $appDir = Join-Path $ResourcesPath "app"
+    $appAsar = Join-Path $ResourcesPath "app.asar"
+    $backup = Join-Path $ResourcesPath "_app.asar"
+    $pkgFile = Join-Path $appDir "package.json"
+
+    if ((Test-Path $appDir) -and (Test-Path $pkgFile)) {
+        $pkg = Get-Content $pkgFile -Raw | ConvertFrom-Json
+        if ($pkg.name -eq "nightcord") { Write-Host "  Replacing old injection..." }
+    }
+    if ((Test-Path $appAsar) -and -not (Test-Path $backup)) {
+        Move-Item $appAsar $backup -Force; Write-Host "  Backed up app.asar"
+    }
+    if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+    Set-Content -Path $pkgFile -Value '{"name":"nightcord","main":"index.js"}'
+
+    $p = $PatcherPath.Replace("\", "/")
+    $lines = [System.Collections.ArrayList]::new()
+    $null = $lines.Add('"use strict";')
+    $null = $lines.Add('const path = require("path");')
+    $null = $lines.Add('const fs = require("fs");')
+    $null = $lines.Add('const main = "' + $p + '";')
+    $null = $lines.Add('const alt = path.join(path.dirname(process.execPath), "dist", "patcher.js");')
+    $null = $lines.Add('const p = fs.existsSync(main) ? main : (fs.existsSync(alt) ? alt : null);')
+    $null = $lines.Add("if (p) { require(p); } else { console.error('[Nightcord] patcher.js not found'); }")
+    Set-Content -Path (Join-Path $appDir "index.js") -Value ($lines -join "`r`n")
+    Write-OK "Injected into $ResourcesPath"
 }
 
-# ── Démarrage ─────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────
 Write-Banner
 
-# Créer les dossiers
-New-Item -ItemType Directory -Force -Path $InstallDir  | Out-Null
-New-Item -ItemType Directory -Force -Path $InstallerDir | Out-Null
-New-Item -ItemType Directory -Force -Path $DistDir      | Out-Null
-
-# ── [1/3] Télécharger / Mettre à jour EquilotlCli.exe ────────────────────────
-Write-Step 1 3 "Vérification de l'outil d'installation..."
-
-$needDownload = $true
-if (Test-Path $EquilotlExe) {
-    # Vérifier si une mise à jour est disponible via HEAD
-    try {
-        $head = Invoke-WebRequest -Uri $EquilotlUrl -Method Head -UseBasicParsing `
-            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" }
-        $remoteSize = [long]($head.Headers["Content-Length"] ?? 0)
-        $localSize  = (Get-Item $EquilotlExe).Length
-        if ($remoteSize -gt 0 -and $remoteSize -eq $localSize) {
-            $needDownload = $false
-            Write-OK "EquilotlCli.exe déjà à jour."
-        }
-    } catch { }
-}
-
-if ($needDownload) {
-    Write-Host "          Téléchargement de EquilotlCli.exe..." -ForegroundColor DarkGray
-    try {
-        Invoke-WebRequest -Uri $EquilotlUrl -OutFile $EquilotlExe -UseBasicParsing `
-            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" }
-        Write-OK "EquilotlCli.exe téléchargé !"
-    } catch {
-        Write-Fail "Impossible de télécharger EquilotlCli.exe.`n           Vérifiez votre connexion internet.`n           Détail : $_"
-    }
-}
-
-# ── [2/3] Obtenir les fichiers Nightcord ──────────────────────────────────────
-Write-Step 2 3 "Recherche des fichiers Nightcord..."
-
-# D'abord, vérifier si les fichiers dist locaux existent (copie depuis le dépôt local)
-$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$LocalDist = Join-Path $ScriptRoot "dist" "desktop"
+# Step 1: Get dist files
+$patcherPath = $null
 if ((Test-Path $LocalDist) -and (Test-Path (Join-Path $LocalDist "patcher.js"))) {
-    Write-Host "          Utilisation des fichiers locaux dans : $LocalDist" -ForegroundColor DarkGray
-    if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-    Copy-Item "$LocalDist\*" $DistDir -Recurse -Force
-    $version = "local-build"
-    Set-Content -Path (Join-Path $InstallDir "version.txt") -Value $version
-    Write-OK "Nightcord (build local) prêt à être injecté !"
+    $patcherPath = Join-Path $LocalDist "patcher.js"
+    Write-OK "Using local dist files"
+} elseif ((Test-Path (Join-Path (Join-Path $ScriptRoot "dist") "patcher.js"))) {
+    $patcherPath = Join-Path (Join-Path $ScriptRoot "dist") "patcher.js"
+    Write-OK "Using local dist files"
 } else {
-    # Fallback : télécharger depuis GitHub Releases
-    Write-Host "          Téléchargement depuis GitHub..." -ForegroundColor DarkGray
+    Write-Host "  No local dist found, trying GitHub..." -ForegroundColor DarkGray
     try {
-        $apiUrl   = "https://api.github.com/repos/$NightcordRepo/releases/latest"
-        $release  = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing `
-            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0"; "Accept" = "application/vnd.github.v3+json" }
-
-        $version  = $release.tag_name
-        $distAsset = $release.assets | Where-Object { $_.name -eq "nightcord-dist.zip" } | Select-Object -First 1
-
-        if (-not $distAsset) {
-            Write-Fail "Fichier 'nightcord-dist.zip' introuvable dans la release $version.`n           Contactez le support Nightcord."
-        }
-
-        Write-Host "          Version : $version" -ForegroundColor DarkGray
-        Write-Host "          Téléchargement en cours..." -ForegroundColor DarkGray
-
-        $zipPath = Join-Path $InstallDir "nightcord-dist.zip"
-        Invoke-WebRequest -Uri $distAsset.browser_download_url -OutFile $zipPath -UseBasicParsing `
-            -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" }
-
+        $api = "https://api.github.com/repos/$Repo/releases/latest"
+        $rel = Invoke-RestMethod $api -Headers @{"User-Agent"="Nightcord"; "Accept"="application/vnd.github.v3+json"}
+        $asset = $rel.assets | Where-Object { $_.name -eq "nightcord-dist.zip" } | Select-Object -First 1
+        if (-not $asset) { throw "nightcord-dist.zip not found in release" }
+        $zip = Join-Path $InstallDir "nightcord-dist.zip"
+        Invoke-WebRequest $asset.browser_download_url -OutFile $zip
         if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force }
-        New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath $DistDir -Force
-        Remove-Item $zipPath -Force
-
-        Set-Content -Path (Join-Path $InstallDir "version.txt") -Value $version
-        Write-OK "Nightcord $version téléchargé et extrait !"
-    } catch {
-        Write-Fail "Échec du téléchargement Nightcord depuis GitHub.`n           Détail : $_"
-    }
+        Expand-Archive $zip $DistDir -Force; Remove-Item $zip -Force
+        $patcherPath = Join-Path $DistDir "patcher.js"
+    } catch { Write-Fail "No local dist and GitHub failed. Run pnpm build first.`n$_" }
 }
 
-# ── [3/3] Injection via EquilotlCli ───────────────────────────────────────────
-Write-Step 3 3 "Lancement de l'interface d'injection..."
-Write-Host ""
-Write-Host "          ┌─────────────────────────────────────────────────┐" -ForegroundColor DarkCyan
-Write-Host "          │  Une fenêtre va s'ouvrir.                       │" -ForegroundColor DarkCyan
-Write-Host "          │  Sélectionnez le Discord où injecter Nightcord. │" -ForegroundColor DarkCyan
-Write-Host "          └─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
-Write-Host ""
+# Step 2: Detect Discord
+$discords = Find-Discord
+if ($discords.Count -eq 0) { Write-Fail "No Discord installations found." }
+Write-OK "Found $($discords.Count) Discord installation(s)"
 
-# Ces variables d'environnement indiquent à EquilotlCli où trouver les fichiers
-$env:EQUICORD_USER_DATA_DIR = $InstallDir
-$env:EQUICORD_DIRECTORY     = $DistDir
-$env:EQUICORD_DEV_INSTALL   = "1"
+# Step 3: Inject
+Kill-Discord
+$count = 0
+foreach ($d in $discords) {
+    Inject-Nightcord -ResourcesPath $d.Path -PatcherPath $patcherPath
+    $count++
+}
+Write-OK "Injected into $count Discord installation(s)"
 
-try {
-    & $EquilotlExe "--install"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "EquilotlCli a retourné une erreur (code $LASTEXITCODE)."
-    }
-} catch {
-    Write-Fail "Impossible de lancer l'installeur.`n           Détail : $_"
+# Restart Discord
+$stable = $discords | Where-Object { $_.Path -like "*\Discord\*" } | Select-Object -First 1
+if ($stable) {
+    $upd = Join-Path (Split-Path $stable.Path -Parent) "Update.exe"
+    if (Test-Path $upd) { Start-Process $upd -ArgumentList "--processStart Discord.exe" -WindowStyle Hidden }
 }
 
-# ── Succès ────────────────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "  ║  Nightcord installé avec succès !                    ║" -ForegroundColor Green
-Write-Host "  ║                                                      ║" -ForegroundColor Green
-Write-Host "  ║  → Redémarrez Discord pour appliquer Nightcord.      ║" -ForegroundColor Green
-Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
-Write-Host ""
-Write-Host "  Pour désinstaller : exécutez nightcord-uninstall.bat" -ForegroundColor DarkGray
-Write-Host ""
-Start-Sleep -Seconds 4
+Write-Host "`n  Nightcord installed successfully!`n" -ForegroundColor Green
+Start-Sleep 3

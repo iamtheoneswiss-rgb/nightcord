@@ -341,12 +341,23 @@ namespace NightcordInstaller
 
         private async Task EnsureDistAsync()
         {
-            var localDist = Path.Combine(_exeDir, "dist");
-            if (Directory.Exists(localDist) && File.Exists(Path.Combine(localDist, "patcher.js")))
+            // Search for local dist/ directory in multiple locations
+            string[] searchPaths = {
+                Path.Combine(_exeDir, "dist", "desktop"),
+                Path.Combine(_exeDir, "dist"),
+                Path.Combine(_exeDir, "..", "dist", "desktop"),
+                Path.Combine(_exeDir, "..", "..", "dist", "desktop"),
+                Path.Combine(_exeDir, "..", "..", "..", "dist", "desktop"),
+            };
+            foreach (var p in searchPaths)
             {
-                _distDir = localDist;
-                SetStatus("loading", "Files found locally...");
-                return;
+                var resolved = Path.GetFullPath(p);
+                if (Directory.Exists(resolved) && File.Exists(Path.Combine(resolved, "patcher.js")))
+                {
+                    _distDir = resolved;
+                    SetStatus("loading", $"Files found locally: {resolved}");
+                    return;
+                }
             }
 
             SetProgress(2, "Fetching latest release information...");

@@ -1,56 +1,58 @@
 # ==============================================================================
-#  Nightcord — Désinstalleur utilisateur (PowerShell)
-#  Supprime l'injection Nightcord de Discord
-#
-#  Usage : Clic droit → "Exécuter avec PowerShell"
+#  Nightcord - Uninstaller (PowerShell, fully offline)
+#  Removes Nightcord injection from Discord.
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
-$InstallDir    = Join-Path $env:LOCALAPPDATA "Nightcord-Client"
-$DistDir       = Join-Path $InstallDir "dist\desktop"
-$InstallerDir  = Join-Path $InstallDir "installer"
-$EquilotlExe   = Join-Path $InstallerDir "EquilotlCli.exe"
-
-Clear-Host
-Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║      NIGHTCORD — Désinstalleur           ║" -ForegroundColor Cyan
-Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
-
-if (-not (Test-Path $EquilotlExe)) {
-    Write-Host "  [INFO] EquilotlCli.exe introuvable." -ForegroundColor Yellow
-    Write-Host "         Téléchargement de l'outil de désinstallation..." -ForegroundColor Yellow
+function Write-Banner {
+    Clear-Host
     Write-Host ""
-    New-Item -ItemType Directory -Force -Path $InstallerDir | Out-Null
-    $EquilotlUrl = "https://github.com/Equicord/Equilotl/releases/latest/download/EquilotlCli.exe"
-    Invoke-WebRequest -Uri $EquilotlUrl `
-        -Headers @{ "User-Agent" = "Nightcord-Installer/2.0" } `
-        -OutFile $EquilotlExe -UseBasicParsing
+    Write-Host "  NIGHTCORD UNINSTALLER" -ForegroundColor Cyan
+    Write-Host ""
 }
 
-Write-Host "  Lancement du désinstalleur graphique..." -ForegroundColor Yellow
-Write-Host "  Une fenêtre va s'ouvrir pour choisir votre Discord cible." -ForegroundColor Yellow
-Write-Host ""
+function Write-OK($m) { Write-Host "  [OK] $m" -ForegroundColor Green }
 
-$env:EQUICORD_USER_DATA_DIR = $InstallDir
-$env:EQUICORD_DIRECTORY     = $DistDir
-$env:EQUICORD_DEV_INSTALL   = "1"
-
-try {
-    & $EquilotlExe "--uninstall"
-} catch {
-    Write-Host "  [ERREUR] La désinstallation a échoué : $_" -ForegroundColor Red
-    Write-Host "  Appuyez sur une touche pour quitter..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit 1
+function Find-Discord {
+    $results = @()
+    foreach ($ch in @("Discord","DiscordPTB","DiscordCanary","DiscordDevelopment")) {
+        $base = Join-Path $env:LOCALAPPDATA $ch
+        if (-not (Test-Path $base)) { continue }
+        $versions = Get-ChildItem $base -Directory -Filter "app-*" | Sort-Object Name -Descending
+        foreach ($ver in $versions) {
+            $res = Join-Path $ver.FullName "resources"
+            $appDir = Join-Path $res "app"; $backup = Join-Path $res "_app.asar"
+            if ((Test-Path $appDir) -or (Test-Path $backup)) {
+                $results += @{ Path = $res; Channel = $ch; Version = $ver.Name -replace "app-", "" }
+            }
+        }
+    }
+    return $results
 }
 
-Write-Host ""
-Write-Host "  ┌──────────────────────────────────────────────────────┐" -ForegroundColor Green
-Write-Host "  │  Nightcord désinstallé avec succès !                 │" -ForegroundColor Green
-Write-Host "  │  Redémarrez Discord pour appliquer les changements.  │" -ForegroundColor Green
-Write-Host "  └──────────────────────────────────────────────────────┘" -ForegroundColor Green
-Write-Host ""
-Start-Sleep -Seconds 3
+function Uninject-Nightcord {
+    param($ResourcesPath)
+    $appDir = Join-Path $ResourcesPath "app"
+    $appAsar = Join-Path $ResourcesPath "app.asar"
+    $backup = Join-Path $ResourcesPath "_app.asar"
+    $pkgFile = Join-Path $appDir "package.json"
+    if ((Test-Path $appDir) -and (Test-Path $pkgFile)) {
+        $pkg = Get-Content $pkgFile -Raw | ConvertFrom-Json
+        if ($pkg.name -eq "nightcord") { Remove-Item $appDir -Recurse -Force; Write-OK "Removed injection" }
+    }
+    if ((Test-Path $backup) -and -not (Test-Path $appAsar)) { Move-Item $backup $appAsar -Force; Write-OK "Restored app.asar" }
+    elseif (Test-Path $backup) { Remove-Item $backup -Force; Write-OK "Removed stale backup" }
+}
+
+Write-Banner
+$discords = Find-Discord
+if ($discords.Count -eq 0) { Write-Host "  No Nightcord injections found."; Start-Sleep 2; exit 0 }
+foreach ($d in $discords) {
+    $n = if ($d.Channel -eq "Discord") { "Discord Stable" } else { $d.Channel }
+    Write-Host "  -> $n v$($d.Version)" -ForegroundColor DarkGray
+    Uninject-Nightcord -ResourcesPath $d.Path
+}
+Write-Host "`n  Nightcord uninstalled successfully! Restart Discord.`n" -ForegroundColor Green
+Start-Sleep 3
